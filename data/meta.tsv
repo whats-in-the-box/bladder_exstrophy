@@ -1,0 +1,20 @@
+sample Group Replicate ori_fq1 ori_fq2 fq1 fq2 Diagnosis Surgery Sex Age
+C100 C 100 JMic-100_S11_R1_001.fastq.gz JMic-100_S11_R2_001.fastq.gz ./C100_R1.fastq.gz ./C100_R2.fastq.gz Exstrophy "Delayed Closure" M 12.8
+C106 C 106 JMic-106_S1_R1_001.fastq.gz JMic-106_S1_R2_001.fastq.gz ./C106_R1.fastq.gz ./C106_R2.fastq.gz Exstrophy "Delayed Closure" M 5.9
+B121 B 121 JMic-121_S2_R1_001.fastq.gz JMic-121_S2_R2_001.fastq.gz ./B121_R1.fastq.gz ./B121_R2.fastq.gz Exstrophy "Newborn Closure" F 0.4
+D123 D 123 JMic-123_S3_R1_001.fastq.gz JMic-123_S3_R2_001.fastq.gz ./D123_R1.fastq.gz ./D123_R2.fastq.gz Exstrophy Augmentation M 186.3
+B146 B 146 Jmic-146_S4_R1_001.fastq.gz Jmic-146_S4_R2_001.fastq.gz ./B146_R1.fastq.gz ./B146_R2.fastq.gz Exstrophy "Newborn Closure" M 0.1
+D19 D 19 JMic-19_S2_R1_001.fastq.gz JMic-19_S2_R2_001.fastq.gz ./D19_R1.fastq.gz ./D19_R2.fastq.gz Exstrophy Augmentation M 94.7
+A214 A 214 JMic-214_S5_R1_001.fastq.gz JMic-214_S5_R2_001.fastq.gz ./A214_R1.fastq.gz ./A214_R2.fastq.gz Control Reimplant M 29
+A28 A 28 JMic-28_S3_R1_001.fastq.gz JMic-28_S3_R2_001.fastq.gz ./A28_R1.fastq.gz ./A28_R2.fastq.gz Control Reimplant M 66.3
+C331 C 331 JMic-331_S7_R1_001.fastq.gz JMic-331_S7_R2_001.fastq.gz ./C331_R1.fastq.gz ./C331_R2.fastq.gz Exstrophy "Delayed Closure" F 26.9
+D37 D 37 JMic-37_S4_R1_001.fastq.gz JMic-37_S4_R2_001.fastq.gz ./D37_R1.fastq.gz ./D37_R2.fastq.gz Exstrophy Augmentation F 71.8
+B441 B 441 JMic-441_S8_R1_001.fastq.gz JMic-441_S8_R2_001.fastq.gz ./B441_R1.fastq.gz ./B441_R2.fastq.gz Exstrophy "Newborn Closure" M 0.1
+B49 B 49 JMic-49_S5_R1_001.fastq.gz JMic-49_S5_R2_001.fastq.gz ./B49_R1.fastq.gz ./B49_R2.fastq.gz Exstrophy "Newborn Closure" M 0.1
+D596 D 596 JMic-596_S9_R1_001.fastq.gz JMic-596_S9_R2_001.fastq.gz ./D596_R1.fastq.gz ./D596_R2.fastq.gz Exstrophy Augmentation M 111.1
+B61 B 61 JMic-61_S6_R1_001.fastq.gz JMic-61_S6_R2_001.fastq.gz ./B61_R1.fastq.gz ./B61_R2.fastq.gz Exstrophy "Newborn Closure" F 0.1
+C67 C 67 JMic-67_S7_R1_001.fastq.gz JMic-67_S7_R2_001.fastq.gz ./C67_R1.fastq.gz ./C67_R2.fastq.gz Exstrophy "Delayed Closure" M 7.9
+C6 C 6 JMic-6_S1_R1_001.fastq.gz JMic-6_S1_R2_001.fastq.gz ./C6_R1.fastq.gz ./C6_R2.fastq.gz Exstrophy "Delayed Closure" M 6.6
+D72 D 72 JMic-72_S8_R1_001.fastq.gz JMic-72_S8_R2_001.fastq.gz ./D72_R1.fastq.gz ./D72_R2.fastq.gz Exstrophy Augmentation F 75.4
+A88 A 88 JMic-88_S9_R1_001.fastq.gz JMic-88_S9_R2_001.fastq.gz ./A88_R1.fastq.gz ./A88_R2.fastq.gz Control Reimplant F 78.7
+D997 D 997 JMic-997_S10_R1_001.fastq.gz JMic-997_S10_R2_001.fastq.gz ./D997_R1.fastq.gz ./D997_R2.fastq.gz Exstrophy Augmentation F 116
