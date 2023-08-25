@@ -1,0 +1,899 @@
+---
+title: "Inflammatory expression profiles in bladder exstrophy smooth muscle: normalization over time"
+author: "Jason E Michaud, **Haowen Qiu**, Heather N DiCarlo, John P Gearhart"
+date: "2023-03-13"
+abstract: "Objectives<br>To test the hypothesis that phenotypes in bladder exstrophy result from alterations in detrusor smooth muscle cell (SMC) gene expression.<br>Methods<br>We generated primary human bladder smooth muscle cell lines from patients with classic bladder exstrophy (CBE) undergoing newborn closure (n=6), delayed primary closure (n=5), augmentation cystoplasty (n=6), and non-CBE controls (n=3). Gene expression profiles were then created using RNA sequencing and characterized using gene set enrichment analysis (GSEA).<br>Results<br>We identified 308 differentially expressed genes in bladder exstrophy SMC when compared to controls, including 223 upregulated and 85 downregulated genes. Bladder exstrophy muscle cell lines from newborn closure and primary delayed closures shared expression changes in 159 genes. GSEA analysis revealed increased expression in the inflammatory response and alteration of genes for genitourinary development in newborn and delayed closure SMC. However, these changes were absent in SMC from older exstrophy patients after closure.<br>Conclusions<br>Bladder exstrophy SMC demonstrate gene expression changes in the inflammatory response and genitourinary development. However, gene expression profiles normalized in exstrophy SMC from older patients after closure, suggesting a normalization of exstrophy SMC over time. Our in vitro findings regarding the normalization of exstrophy SMC gene expression following bladder closure suggest that the development of poor detrusor compliance in bladder exstrophy has a complex multifactorial etiology. Taken together, our findings suggest that alterations in SMC gene expression may explain abnormalities in the exstrophy bladder seen prior to and immediately after closure and suggest that surgical closure may allow exstrophy SMC to normalize over time."
+doi: "https://doi.org/10.1016/j.urology.2023.02.042"
+execute:
+  echo: true
+  #cache: true
+format: 
+  html:
+    toc: true
+    toc-location: left
+    reference-location: document
+    cold-fold: true
+    theme: flatly
+    self-contained: true
+    #cache: true
+
+comments: 
+        hypothesis: true
+---
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+suppressPackageStartupMessages(c(
+  library("ggrepel"),
+  library("pheatmap"),
+  library("data.table"),
+  library("DT"),
+  library("extrafont"),
+  library("RColorBrewer"),
+  library("DESeq2"),
+  library("readxl"),
+  library("knitr"),
+  library("knitcitations"),
+  library("gridExtra"),
+  library("DESeq2"),
+  library("tidyverse"),
+  library("clusterProfiler"),
+  library("org.Hs.eg.db"),
+  library("AnnotationDbi")
+))
+
+
+# source functions needed
+script_folder = "../scripts/"
+source(paste(script_folder, "visual_functions.R", sep = ""))
+
+## needed for DGE
+raw_count_file = "data/featureCounts_sorted_count.dm"
+metadata = "data/meta.tsv"
+ensembl_annot = "data/ensembl_annot.tsv"
+alignment_summary = "data/Stats_STAR_FC.csv" 
+
+# generic parameters
+log2fc = 1
+fdr = 0.05
+heatmap_topN = 100
+
+# get start time
+start_time <- Sys.time()
+```
+
+
+## Project and data background
+
+The bladder exstrophy- epispadias- cloacal exstrophy complex (BEEC) is a rare spectrum of congenital anomalies affecting the genitourinary, musculoskeletal, and gastrointestinal systems with varying severity. Exstrophy bladders are known to have reduced smooth muscle content and increased type-III collagen deposition, while exstrophy smooth muscle cells (SMC) have reduced intracellular calcium levels and reduced contractile responses. We hypothesized that exstrophy bladder and SMC phenotypes result from alterations in detrusor SMC gene expression. 
+
+To examine potential alterations in exstrophy SMC gene expression, we generated primary SMC lines from bladder biopsies of patients with CBE at the time of surgery. We then measured global gene expression with RNA-seq of RNAs isolated from primary SMCs. Our cell lines included CBE patients undergoing newborn closure (n=6), delayed primary closure (n=5), older CBE patients undergoing bladder augmentation (enterocystoplasty) for poor bladder growth after newborn closure (n=6), and non-CBE controls undergoing ureteral reimplantation for vesicoureteral reflux (n=3). 
+
+
+```{r warning=FALSE, message=FALSE}
+### data formatting and wrangling
+count_dm = read.delim(raw_count_file, row.names=1)
+for (i in 1:nrow(count_dm)) {
+        count_dm$ensembl_id[i] = unlist(str_split( rownames(count_dm)[i], pattern = "\\." ))[1]
+}
+
+# duplication rownames
+dup = subset(count_dm, duplicated(count_dm$ensembl_id)) %>% pull(., var = "ensembl_id")
+#rownames(dup_df[dup_df$ensembl_id == dup[3],])
+
+# select one row from duplicated rows to keep
+dup_df = count_dm %>%
+        dplyr::filter(ensembl_id %in% dup) %>%
+        rownames_to_column(., var = "rownames") %>%
+        group_by(., ensembl_id) %>%
+        filter(!grepl("Y$", rownames)) %>%
+        column_to_rownames(., var = "rownames")
+count_dm = count_dm %>%
+        dplyr::filter(!(ensembl_id %in% dup)) %>%
+        bind_rows(., dup_df)
+
+count_dm = count_dm %>%
+        remove_rownames(.) %>%
+        column_to_rownames(., var = "ensembl_id")
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+sample_data = read.csv(metadata, sep = "") %>%
+        mutate(Group = case_when(Group == "A" ~ "Control",
+                                        Group == "B" ~ "Newborn",
+                                        Group == "C" ~ "Delayed", 
+                                        Group == "D"~ "Augment")) %>%
+        mutate(Group = as.factor(Group)) %>%
+        #mutate(Group = fct_relevel(Group, "Control", "Newborn", "Delayed", "Augment")) %>% # the same as below line
+        mutate(Group = factor(Group, levels = c("Control", "Newborn", "Delayed", "Augment"))) %>%
+        mutate(Diagnosis = as.factor(Diagnosis)) %>%
+        mutate(Surgery = as.factor(Surgery)) %>%
+        mutate(Sex = as.factor(Sex)) %>% 
+        mutate(Age = as.numeric(Age))
+
+ensembl_annot = read.delim(ensembl_annot) %>%
+        dplyr::select(ensembl_gene_id, external_gene_name, description, gene_biotype, go_id ) %>%
+        mutate_all(~na_if(., ''))
+
+ensembl_annot1 = aggregate(go_id ~ ensembl_gene_id + external_gene_name + description + gene_biotype, data = ensembl_annot, paste, collapse = ", ")
+
+interested_GO = c("GO:0001655", "GO:0001822", "GO:0005149", "GO:0007517", "GO:0008009", "GO:0030595", "GO:0034612", "GO:0042060", "GO:0042379", "GO:0048568", "GO:0048704", "GO:0050727", "GO:0055074", "GO:0070700", "GO:0071356")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+### run deseq2
+design_formula = ~Group
+ddsMat <- DESeqDataSetFromMatrix(countData = count_dm,
+                                 colData = sample_data,
+                                 design = design_formula)
+# pre-filtering the data set by filtering rows that have no or 1 count
+ddsMat <- ddsMat[ rowSums(counts(ddsMat)) > 0, ]
+dds = DESeq(ddsMat)
+#resultsNames(dds)
+```
+
+
+
+## RNA-seq data processing and analysis
+
+RNA was isolated from primary SMC, passage P3-5, after serum starving in 0.5% serum for 24hrs. mRNA-seq libraries were prepared from total RNA for sequencing on an Illumina NextSeq500 platform. Major steps of the RNA-seq data processing pipelines include: 
+
+* `FASTQC` and `MULTIQC` for quality check
+
+* `TrimGalore` for trimming and pre-processing
+
+* `STAR` for mapping and align sequences to reference genome
+
+* `SUBREAD` for summarizing reads before and after pre-processing and alignment
+
+A summary of alignment is provided in this table: 
+
+```{r message=FALSE, warning=FALSE}
+alignment_summary = read.csv(alignment_summary) %>% janitor::clean_names()
+alignment_summary %>%
+        left_join(., sample_data[,1:2]) %>%
+        relocate(Group, .after = sample) %>%
+        knitr::kable(., digits = 3, "html") %>%
+        kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+        kableExtra::scroll_box(width = "100%", height = "500px")
+```
+
+
+We performed two downstream analysis, **differential gene expression (DGE)** analysis using `DESeq2` and **GO enrichment analysis** using `clusterProfiler`.
+
+
+::: {.panel-tabset .column-body-outset-right}
+
+#### Sample-to-sample distances
+
+
+```{r sample_dist_1, warning=FALSE, message=FALSE, fig.dim=c(10, 10), fig.align='center'}
+### generate transformed count matrix
+# blind = TRUE for QA, blind = FALSE for downstream analysis
+transformed_count <- rlog(ddsMat, blind = FALSE)
+colnames(transformed_count) <- sample_data$sample
+
+# change transformed_count into a matrix
+transformed_count <- assay(transformed_count)
+
+# annotation for heatmaps
+anno = sample_data %>% 
+  dplyr::select(Group, sample) %>% 
+  column_to_rownames(var = "sample")
+
+deseq2_dist(transformed_count, anno)
+```
+
+
+This plot shows the **euclidean distance of samples** and how they are hierarchically 
+clustered using the normalized (regularized log transformed) count data generated with `DESeq2`. 
+
+#### PCA
+
+**PCA by group**
+
+```{r pca_1, warning=FALSE, message=FALSE, fig.align='center'}
+pca_group <- deseq2_pca(sample_data, transformed_count, 
+           PC1 = "PC1", PC2 = "PC2", color_by = "Group", save = FALSE)
+print(pca_group[[1]])
+```
+
+The PCA plot shows the first two principal components of the regularized log transformed count data for all samples (there is two few data points to calculate ellipse for Control group). **There was no obvious separation between groups.**
+
+:::
+
+Pairwise comparisons between newborn closure, delayed closure, and augmentation groups were compared to the control group, respectively. Differentially expressed genes (DEG) were defined as having a Benjamini-Hochberg adjusted P value <0.05 and log2FC >1.0. DEG were further enrolled in GO enrichment analysis in R using clusterProfiler version 4.4.4. For gene set enrichment analysis (GSEA), the ranked gene list by log2FC was entered in a pre-ranked GSEA function in clusterProfiler, using human gene sets database (org.Hs.eg.db v3.15.0). Dot plots from GO enrichment analysis and GSEA were generated in R by enrichplot version 1.16.2. Only annotated RNAs are presented. All experimental data are available through the NCBI GEO repository.
+
+
+## Newborn vs Control
+
+::: {.panel-tabset .column-body-outset-right}
+
+### Differential gene expression analysis using `DESeq2`
+
+<!-- #### DGE result summary -->
+
+```{r warning=FALSE, message=FALSE}
+contrast = c("Group", "Newborn", "Control")
+res_unshrunken <- results(dds, contrast = contrast, alpha = 0.05)
+#summary(res_unshrunken)
+res <- lfcShrink(dds, contrast = contrast, res = res_unshrunken, type = "ashr")
+#summary(res)
+
+```
+
+
+#### MA plot
+
+MA plot compares the log fold change against the mean of the normalized counts.
+Each point shows a feature. The points in blue are those that have an adjusted
+p-value smaller than `alpha`.
+
+```{r MA_plot_1, fig.align='center'}
+deseq2_plotMA(res)
+```
+
+
+#### Significant features
+
+::: {.callout-note}
+**Genes with a Benjamini-Hochberg (FDR) adjusted P value smaller than 0.05 and an absolute log2 fold change larger than 1 were considered differentially expressed.**
+
+:::
+
+
+```{r warning=FALSE, message=FALSE}
+full_stat <- as.data.frame(res) %>%
+        mutate(across(everything(), ~as.numeric(.x))) %>%
+        mutate(abs_log2FC = abs(log2FoldChange) )
+
+
+full_stat_BA = full_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames")
+```
+
+
+```{r warning=FALSE, message=FALSE}
+sig_stat <- full_stat %>%
+  #dplyr::rename(., gene = Gene_name) %>%
+  dplyr::filter(padj < fdr & abs(log2FoldChange) > log2fc) %>%
+  mutate(status = if_else(log2FoldChange < 0, "Down", "Up"))
+
+sig_stat_BA = sig_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames") %>%
+        dplyr::filter(!is.na(external_gene_name) )
+
+```
+
+::: {.panel-tabset}
+
+#### Volcano plot
+
+Volcano plot is another way to visualize the DGE results. Each point represents 
+a feature. The colored points are differentially expressed genes with `alpha` = `r fdr` and `log2FC` = `r log2fc` ([blue : down-regulated]{style="color:blue"}, [red : up-regulated]{style="color:red"}). **Top 10 up- and down-regulated genes are labeled.**
+
+```{r volcano_plot_1, warning=FALSE, message=FALSE, fig.dim=c(6,6), fig.align='center'}
+deseq2_volcano_2(full_stat, sig_stat_BA, fdr = fdr, log2fc = log2fc, label_col = "external_gene_name")
+```
+
+#### Heatmap
+
+Heatmaps are a great way to visualize the clustering of samples using normalized 
+count data. This heatmap shows the row-wise Z-scores of regularized log transformed count data for all differentially expressed genes.
+
+
+```{r heatmap_all_1, fig.dim=c(12, 12), fig.align='center'}
+hm = transformed_count[, rownames(anno)[which(anno$Group %in% c("Control", "Newborn"))]]
+
+deseq2_hm_2(hm, sig_stat_BA, anno, save = FALSE)
+```
+
+<!-- **Top `r heatmap_topN` gene heatmap** -->
+
+```{r heatmap_topN_1, fig.dim=c(12, 12), fig.align='center', eval=FALSE, echo=FALSE}
+deseq2_hm_2(hm, sig_stat_BA, anno, rowlabel = "external_gene_name", top_n = heatmap_topN, save = FALSE)
+```
+
+:::
+
+### GO enrichment analysis
+
+Pathway enrichment analysis is a way to **summarize your gene list into pathways to ease biological interpretation of the data**. The analysis uses the **overlap** between your gene list and a pathway to calculate pathway enrichment score.
+
+There are two types of gene lists, corresponding to two tools for enrichment analysis:
+
+-   [Defined gene list]{style="color:hotpink"} (e.g., expression change \> 2-fold, significantly differentiated genes only): over-representation analysis
+    -   Answers the question: **Are any [pathways (gene sets)]{style="color:blue"} surprisingly enriched in my gene list?**
+    -   Statistical test: Fisher's exact test
+-   [Ranked gene list]{style="color:hotpink"} (e.g., by differential gene expression): GSEA
+    -   Answers the question: **Are any [pathways (gene sets)]{style="color:blue"} ranked surprisingly high or low in my ranked list of genes?**
+    -   Statistical test: GSEA
+
+::: {.callout-note}
+Ranked gene list is preferred and recommended so as to avoid arbitrary threshold. 
+:::
+
+There are many pathway databases for enrichment analysis, such as GO, KEGG, WikiPathways, Reactome, etc. In this section, we are using GO (gene ontology) database. 
+
+::: {.panel-tabset}
+
+#### Over-representation analysis (ORA)
+
+
+::: {.callout-note}
+
+Over representation analysis needs two things as input:
+
+-   A [defined gene list]{style="color:hotpink"}
+<!-- -   A [background list]{style="color:wheat"} -->
+-   [Gene sets (pathways)]{style="color:blue"} or annotations: e.g. GO database.
+
+The question ORA is trying to answer is: **are any of the** [gene sets (pathways)]{style="color:blue"} surprisingly enriched in the [gene list]{style="color:hotpink"}?
+
+:::
+
+
+```{r warning=FALSE, message=FALSE}
+genes_to_test = rownames(sig_stat)
+
+GO_results <- clusterProfiler::enrichGO(gene = genes_to_test, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff  = 0.01,qvalueCutoff = 0.05, readable=TRUE)
+```
+
+<!-- **Significant** ORA result sorted by **GeneRatio**: -->
+
+```{r message=FALSE, warning=FALSE}
+#as.data.frame(GO_results) %>% head()
+GO_results_tidy = GO_results %>% 
+        slot("result") %>% 
+        tibble::as_tibble() %>%
+        mutate(GeneRatio_num = DOSE::parse_ratio(GeneRatio)) %>%
+        dplyr::arrange(desc(GeneRatio_num)) 
+#GO_results_tidy %>% create_dt()
+```
+
+**Dotplot**
+
+
+```{r fig.dim=c(8, 8)}
+GO_results = GO_results %>% 
+        mutate(GeneRatio_num = DOSE::parse_ratio(GeneRatio)) %>%
+        dplyr::arrange(desc(GeneRatio_num))
+dotplot(GO_results, showCategory = 20)
+```
+
+::: {.callout-note}
+Dotplot is the most widely used method to visualize enriched terms. It depicts the enrichment scores (e.g. p values) and gene count or ratio as dot size and color.
+
+Above graph is showing top 20 enriched terms. 
+:::
+
+
+#### Gene set enrichment analysis (GSEA)
+
+::: {.callout-note}
+
+GSEA needs two things as input:
+
+-   A [ranked gene list]{style="color:hotpink"}
+
+-   [Gene Sets (pathways)]{style="color:blue"} or annotations: e.g. GO database.
+
+The analysis answers the question: **are any [pathways (gene sets)]{style="color:blue"} ranked surprisingly high or low in my ranked list of genes**?
+
+:::
+
+```{r warning=FALSE, message=FALSE}
+geneList = res_unshrunken$log2FoldChange
+names(geneList) = rownames(res_unshrunken)
+
+geneList = na.omit(geneList) %>% sort(., decreasing = TRUE)
+
+GSE_results = gseGO(gene = geneList, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff = 0.05)
+```
+
+<!-- **Significant** GSEA result sorted by **NES**: -->
+
+```{r}
+GSE_results_tidy = GSE_results %>% 
+        slot("result") %>% 
+        tibble::as_tibble() %>%
+        dplyr::arrange(desc(NES))
+        
+#GSE_results_tidy %>% create_dt()
+```
+
+
+**Dotplot**
+
+Top 20 enriched terms in both activated and suppressed categories
+
+```{r fig.dim=c(10,10)}
+df <- ggplot2::fortify(GSE_results, showCategory = nrow(GSE_results_tidy), split=".sign") %>%
+        group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(desc(NES))
+
+idx <- order(df[["NES"]], decreasing = TRUE)
+df$Description <- factor(df$Description,
+                          levels=rev(unique(df$Description[idx])))
+
+ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+            guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) + facet_grid(.~.sign, scales = "free_x")
+#dotplot(GSE_results, split=".sign") + facet_grid(.~.sign)
+```
+
+
+<!-- Top 20 most enriched terms in only activated category -->
+
+```{r fig.dim=c(10,10), eval=FALSE}
+df <- ggplot2::fortify(GSE_results, showCategory = nrow(GSE_results_tidy), split=".sign") %>%
+        #group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(desc(NES))
+
+idx <- order(df[["NES"]], decreasing = TRUE)
+df$Description <- factor(df$Description,
+                          levels=rev(unique(df$Description[idx])))
+
+ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+            guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) #+ facet_grid(.~.sign)
+#dotplot(GSE_results, split=".sign", order = T) + facet_grid(.~.sign)
+```
+
+
+```{r}
+# This section is for making dotplot for selected GO terms
+selected_GSE_results = GSE_results %>%
+        dplyr::filter(ID %in% interested_GO)
+
+selected_GSE_results_tidy = GSE_results_tidy %>%
+        dplyr::filter(ID %in% interested_GO)
+# newborn
+df <- ggplot2::fortify(selected_GSE_results, showCategory = nrow(selected_GSE_results_tidy), split=".sign") %>%
+        group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(desc(NES))
+
+idx_newborn <- order(df[["NES"]], decreasing = TRUE)
+df$Description <- factor(df$Description,
+                         levels=rev(unique(df$Description[idx_newborn])))
+
+newborn = ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+                               guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) + xlim(1.5, 2.4) + facet_grid(.~.sign) + theme(legend.position = "none")
+
+newborn_order = df$ID
+```
+
+:::
+
+:::
+
+## Delayed vs Control
+
+::: {.panel-tabset .column-body-outset-right}
+
+### Differential gene expression analysis using `DESeq2`
+
+<!-- #### DGE result summary -->
+
+```{r warning=FALSE, message=FALSE}
+contrast = c("Group", "Delayed", "Control")
+res_unshrunken <- results(dds, contrast = contrast, alpha = 0.05)
+#summary(res_unshrunken)
+res <- lfcShrink(dds, contrast = contrast, res = res_unshrunken, type = "ashr")
+#summary(res)
+
+```
+
+
+
+#### MA plot
+
+MA plot compares the log fold change against the mean of the normalized counts.
+Each point shows a feature. The points in blue are those that have an adjusted 
+p-value smaller than `alpha`.
+
+```{r MA_plot_2, fig.align='center'}
+deseq2_plotMA(res)
+```
+
+
+#### Significant features
+
+::: {.callout-note}
+**Genes with a Benjamini-Hochberg (FDR) adjusted P value smaller than 0.05 and an absolute log2 fold change larger than 1 were considered differentially expressed.**
+
+:::
+
+```{r warning=FALSE, message=FALSE}
+full_stat <- as.data.frame(res) %>%
+        mutate(across(everything(), ~as.numeric(.x))) %>%
+        mutate(abs_log2FC = abs(log2FoldChange) )
+
+full_stat_CA = full_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames") 
+```
+
+
+```{r warning=FALSE, message=FALSE}
+sig_stat <- full_stat %>%
+  #dplyr::rename(., gene = Gene_name) %>%
+  dplyr::filter(padj < fdr & abs(log2FoldChange) > log2fc) %>%
+  mutate(status = if_else(log2FoldChange < 0, "Down", "Up"))
+
+sig_stat_CA = sig_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames") %>%
+        dplyr::filter(!is.na(external_gene_name) )
+
+```
+
+::: {.panel-tabset}
+
+#### Volcano plot
+
+Volcano plot is another way to visualize the DGE results. Each point represents 
+a feature. The colored points are differentially expressed genes with `alpha` = `r fdr` and `log2FC` = `r log2fc` ([blue : down-regulated]{style="color:blue"}, [red : up-regulated]{style="color:red"}). **Top 10 up- and down-regulated genes are labeled.**
+
+```{r volcano_plot_2, warning=FALSE, message=FALSE, fig.dim=c(6,6), fig.align='center'}
+deseq2_volcano_2(full_stat, sig_stat_CA, fdr = fdr, log2fc = log2fc, label_col = "external_gene_name")
+```
+
+#### Heatmap
+
+Heatmaps are a great way to visualize the clustering of samples using normalized 
+count data. This heatmap shows the row-wise Z-scores of regularized log transformed count data for all differentially expressed genes.
+
+
+```{r heatmap_all_2, fig.dim=c(12, 12), fig.align='center'}
+hm = transformed_count[, rownames(anno)[which(anno$Group %in% c("Control", "Delayed"))]]
+deseq2_hm_2(hm, sig_stat_CA, anno, save = FALSE)
+```
+
+<!-- **Top `r heatmap_topN` gene heatmap** -->
+
+```{r heatmap_topN_2, fig.dim=c(12, 12), fig.align='center', eval=FALSE, echo=FALSE}
+deseq2_hm_2(hm, sig_stat_CA, anno, rowlabel = "external_gene_name", top_n = heatmap_topN, save = FALSE)
+```
+
+:::
+
+### GO enrichment analysis
+
+::: {.panel-tabset}
+
+#### Over-representation analysis (ORA)
+
+
+::: {.callout-note}
+
+Over representation analysis needs two things as input:
+
+-   A [defined gene list]{style="color:hotpink"}
+<!-- -   A [background list]{style="color:wheat"} -->
+-   [Gene sets (pathways)]{style="color:blue"} or annotations: e.g. GO database.
+
+The question ORA is trying to answer is: **are any of the** [gene sets (pathways)]{style="color:blue"} surprisingly enriched in the [gene list]{style="color:hotpink"}?
+
+:::
+
+
+```{r warning=FALSE, message=FALSE}
+genes_to_test = rownames(sig_stat)
+GO_results <- enrichGO(gene = genes_to_test, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff  = 0.01,qvalueCutoff = 0.05, readable=TRUE)
+```
+
+<!-- **Significant** ORA result sorted by **GeneRatio**: -->
+
+```{r message=FALSE, warning=FALSE}
+#as.data.frame(GO_results) %>% head()
+GO_results_tidy = GO_results %>% 
+        slot("result") %>% 
+        tibble::as_tibble() %>%
+        mutate(GeneRatio_num = DOSE::parse_ratio(GeneRatio)) %>%
+        dplyr::arrange(desc(GeneRatio_num)) 
+#GO_results_tidy %>% create_dt()
+```
+
+**Dotplot**
+
+
+```{r fig.dim=c(8, 8)}
+GO_results = GO_results %>% 
+        mutate(GeneRatio_num = DOSE::parse_ratio(GeneRatio)) %>%
+        dplyr::arrange(desc(GeneRatio_num))
+dotplot(GO_results, showCategory = 20)
+```
+
+::: {.callout-note}
+Dotplot is the most widely used method to visualize enriched terms. It depicts the enrichment scores (e.g. p values) and gene count or ratio as dot size and color.
+
+Above plot is showing top 20 enriched terms. 
+:::
+
+
+#### Gene set enrichment analysis (GSEA)
+
+::: {.callout-note}
+
+GSEA needs two things as input:
+
+-   A [ranked gene list]{style="color:hotpink"}
+
+-   [Gene Sets (pathways)]{style="color:blue"} or annotations: e.g. GO database.
+
+The analysis answers the question: **are any [pathways (gene sets)]{style="color:blue"} ranked surprisingly high or low in my ranked list of genes**?
+
+:::
+
+```{r warning=FALSE, message=FALSE}
+geneList = res_unshrunken$log2FoldChange
+names(geneList) = rownames(res_unshrunken)
+
+geneList = na.omit(geneList) %>% sort(., decreasing = TRUE)
+
+GSE_results = gseGO(gene = geneList, OrgDb = "org.Hs.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", pvalueCutoff = 0.05)
+```
+
+<!-- **Significant** GSEA result sorted by **NES**: -->
+
+```{r}
+GSE_results_tidy = GSE_results %>% 
+        slot("result") %>% 
+        tibble::as_tibble() %>%
+        dplyr::arrange(desc(NES))
+        
+#GSE_results_tidy %>% create_dt()
+```
+
+
+**Dotplot**
+
+Top 20 enriched terms in both activated and suppressed categories
+
+```{r fig.dim=c(10,10)}
+df <- ggplot2::fortify(GSE_results, showCategory = nrow(GSE_results_tidy), split=".sign") %>%
+        group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(desc(NES))
+
+idx <- order(df[["NES"]], decreasing = TRUE)
+df$Description <- factor(df$Description,
+                          levels=rev(unique(df$Description[idx])))
+
+ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+            guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) + facet_grid(.~.sign, scales = "free_x")
+#dotplot(GSE_results, split=".sign") + facet_grid(.~.sign)
+```
+
+
+<!-- Top 20 enriched terms in only activated categories -->
+
+```{r fig.dim=c(10,10), eval=FALSE}
+df <- ggplot2::fortify(GSE_results, showCategory = nrow(GSE_results_tidy), split=".sign") %>%
+        #group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(desc(NES))
+
+idx <- order(df[["NES"]], decreasing = TRUE)
+df$Description <- factor(df$Description,
+                          levels=rev(unique(df$Description[idx])))
+
+ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+            guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) #+ facet_grid(.~.sign)
+#dotplot(GSE_results, split=".sign") + facet_grid(.~.sign)
+```
+
+
+```{r}
+# This section is for making dotplot for selected GO terms
+selected_GSE_results = GSE_results %>%
+        dplyr::filter(ID %in% interested_GO)
+
+selected_GSE_results_tidy = GSE_results_tidy %>%
+        dplyr::filter(ID %in% interested_GO)
+# delayed
+df <- ggplot2::fortify(selected_GSE_results, showCategory = nrow(selected_GSE_results_tidy), split=".sign") %>%
+        group_by(., .sign) %>%
+        top_n(., 20, NES) %>%
+        dplyr::arrange(match(ID, newborn_order))
+
+
+df$Description <- factor(df$Description,
+                         levels=rev(unique(df$Description[idx_newborn])))
+
+
+delayed = ggplot(df, aes_string(x="NES", y="Description", size= "GeneRatio", color="p.adjust")) +
+        geom_point() +
+        scale_color_continuous(low="red", high="blue", name = "p.adjust",
+                               guide=guide_colorbar(reverse=TRUE)) +
+        scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) +
+        ylab(NULL) + ggtitle("") + DOSE::theme_dose(12) +
+        scale_size(range=c(3, 8)) + xlim(1.5, 2.4) + facet_grid(.~.sign)
+```
+
+:::
+
+:::
+
+## Augumentation vs Control
+
+::: {.panel-tabset .column-body-outset-right}
+
+### Differential gene expression analysis using `DESeq2`
+
+<!-- #### DGE result summary -->
+
+```{r warning=FALSE, message=FALSE}
+contrast = c("Group", "Augment", "Control")
+res_unshrunken <- results(dds, contrast = contrast, alpha = 0.05)
+#summary(res_unshrunken)
+res <- lfcShrink(dds, contrast = contrast, res = res_unshrunken, type = "ashr")
+#summary(res)
+
+```
+
+
+#### MA plot
+
+MA plot compares the log fold change against the mean of the normalized counts.
+Each point shows a feature. The points in blue are those that have an adjusted 
+p-value smaller than `alpha`.
+
+```{r MA_plot_3, fig.align='center'}
+deseq2_plotMA(res)
+```
+
+
+#### Significant features
+
+
+```{r warning=FALSE, message=FALSE}
+full_stat <- as.data.frame(res) %>%
+        mutate(across(everything(), ~as.numeric(.x))) %>%
+        mutate(abs_log2FC = abs(log2FoldChange) )
+
+full_stat_DA = full_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames")
+```
+
+
+```{r warning=FALSE, message=FALSE}
+sig_stat <- full_stat %>%
+  #dplyr::rename(., gene = Gene_name) %>%
+  dplyr::filter(padj < fdr & abs(log2FoldChange) > log2fc) %>%
+  mutate(status = if_else(log2FoldChange < 0, "Down", "Up"))
+
+sig_stat_DA = sig_stat %>% 
+        rownames_to_column(., var = "rownames") %>%
+        left_join(., ensembl_annot1, by = c("rownames" = "ensembl_gene_id")) %>%
+        column_to_rownames(., var = "rownames") %>%
+        dplyr::filter(!is.na(external_gene_name) )
+
+```
+
+::: {.panel-tabset}
+
+#### Volcano plot
+
+Volcano plot is another way to visualize the DGE results. Each point represents 
+a feature. The colored points are differentially expressed genes with `alpha` = `r fdr` and `log2FC` = `r log2fc` ([blue : down-regulated]{style="color:blue"}, [red : up-regulated]{style="color:red"}). **Top 10 up- and down-regulated genes are labeled.**
+
+```{r volcano_plot_3, warning=FALSE, message=FALSE, fig.dim=c(6,6), fig.align='center'}
+deseq2_volcano_2(full_stat, sig_stat_DA, fdr = fdr, log2fc = log2fc, label_col = "external_gene_name")
+```
+
+#### Heatmap
+
+Heatmaps are a great way to visualize the clustering of samples using normalized 
+count data. This heatmap shows the row-wise Z-scores of regularized log transformed count data for all differentially expressed genes.
+
+
+```{r heatmap_all_3, fig.dim=c(12, 12), fig.align='center'}
+hm = transformed_count[, rownames(anno)[which(anno$Group %in% c("Control", "Augment"))]]
+deseq2_hm_2(hm, sig_stat_DA, anno, rowlabel = "external_gene_name", top_n = 3, save = FALSE)
+```
+
+:::
+
+### GO enrichment analysis
+
+Due to the small number of genes significantly differentiated between groups, no enrichment analysis can be performed.
+
+
+:::
+
+## Conclusion
+
+In our expression analysis, we identified significant alterations in exstrophy SMC gene expression, with 309 DEG in exstrophy SMC undergoing newborn closure compared to controls, including 223 upregulated and 86 downregulated genes. We then examined gene expression profiles of exstrophy SMC from patients born with small bladder templates who underwent delayed closure. We identified 297 DEG in delayed closure SMC compared to controls, including 229 upregulated and 68 downregulated genes. Despite being born with smaller templates and undergoing later exstrophy closure, the gene expression profiles of delayed closure SMC were not significantly different from newborn closure SMC. In fact, the gene expression profiles of newborn and delayed closures shared 159 DEG. 
+
+
+```{r}
+sig_list_BA = rownames(sig_stat_BA)
+sig_list_CA = rownames(sig_stat_CA)
+sig_list_DA = rownames(sig_stat_DA)
+common = intersect(sig_list_BA, sig_list_CA)
+
+common_anno = ensembl_annot1 %>%
+        dplyr::filter(ensembl_gene_id %in% common) %>%
+        #remove_rownames(.,) %>%
+        column_to_rownames(., var = "ensembl_gene_id")
+```
+
+
+**An overall heatmap using these `r nrow(common_anno)` common genes:**
+
+
+```{r fig.dim=c(12, 15), message=FALSE, warning=FALSE}
+deseq2_hm_3(transformed_count, common_anno, anno, rowlabel = "external_gene_name", rowname_switch = TRUE, save = FALSE)
+```
+
+
+We next analyzed gene expression in SMC from older CBE patients, biopsied at the time of bladder augmentation (enterocystoplasty). Interestingly, we identified only 3 DEG among SMC expression profiles from older CBE patients undergoing augmentation, as they were not significantly different from controls. DEG shared among all exstrophy SMC included upregulation of the chemokine CXCL8, upregulation of the endoplasmic reticulum protein reticulon 1 (RTN1), and downregulation of C1q and TNF-related 3 (C1QTNF3) genes. Clustering of expression profiles revealed augment SMC were most like controls, whereas newborn SMC were similar to delayed SMC. Together, these data suggest a shift of SMC expression to a non-exstrophy phenotype after closure, despite persistence of bladder pathology with lack of capacity.
+
+**Venn diagram of common genes of three contrasts**
+
+```{r}
+make_venn_3(list("Newborn" = sig_list_BA, "Delayed" = sig_list_CA, "Augment" = sig_list_DA))
+```
+
+**GSEA dotplot for selected GO terms in "Newborn" and "Delayed" contrasts**
+
+To better understand the implications of altered gene expression in exstrophy SMC, we performed gene set enrichment analysis (GSEA) organizing DEG into gene ontology (GO) pathways representative of cellular processes. GSEA confirmed that relevant GO pathways were altered in exstrophy SMC from newborn and delayed closures. Importantly, GSEA revealed that exstrophy SMC predominantly over-expressed inflammatory pathways including genes involved in chemokine signaling and the acute phase response. The inflammatory gene profile was present in both newborn and delayed closure SMC. 
+
+```{r fig.dim=c(15,5), fig.align='center'}
+egg::ggarrange(newborn, delayed, labels = c("Newborn", "Delayed"), nrow = 1,
+               label.args = list(gp = grid::gpar(fontface = 2)) )
+
+```
+
+
+## Reproducibility
+
+The amount of time took to generate the report:
+
+```{r time_spend}
+Sys.time() - start_time
+```
+
+*R* session information:
+
+```{r R_session}
+sessionInfo()
+```
